@@ -1,0 +1,7 @@
+{
+    "idf.adapterTargetName": "esp32",
+    "idf.portWin": "COM5",
+    "idf.flashType": "UART",
+    "idf.currentSetup": "C:\\esp\\v6.0.2\\esp-idf",
+    "idf.port": "COM19"
+}

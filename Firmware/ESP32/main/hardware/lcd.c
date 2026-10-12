@@ -1,0 +1,298 @@
+#include "lcd.h"
+#include "SPI.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include <string.h>
+#include "driver/ledc.h"
+#include "../../lvgl.h"
+#include "hwvers.h"
+
+
+#define st7735_lcd_backlight_min 10
+#define st7735_lcd_backlight_max 100
+
+volatile uint8_t st7735_lcd_backlight=100;
+
+
+inline void LCD_Writ_Bus(uint8_t dat) 
+{	
+
+    esp_err_t ret;
+    spi_transaction_t t;
+    memset(&t, 0, sizeof(t));       //Zero out the transaction
+    t.length=8;                     //Command is 8 bits
+    t.tx_buffer=&dat;               //The data is the cmd itself
+    //t.user=(void*)1;                //D/C needs to be set to 0
+    ret=spi_device_polling_transmit(my_spi, &t);  //Transmit!
+    assert(ret==ESP_OK);            //Should have had no issues.
+
+}
+
+void LCD_WR_DATA8(uint8_t da) 
+{ 
+   LCD_Writ_Bus(da);
+}  
+void LCD_WR_DATA(uint16_t dat)
+{
+    LCD_Writ_Bus(dat>>8);
+	LCD_Writ_Bus(dat);
+
+}   
+
+void LCD_WR_REG(uint8_t da)   
+{ 
+	gpio_set_level(PIN_NUM_DC, 0);
+	LCD_Writ_Bus(da);
+	gpio_set_level(PIN_NUM_DC, 1);
+}
+
+
+void Address_Set(uint16_t x1,uint16_t y1,uint16_t x2,uint16_t y2)
+{ 
+#ifndef ST7735S
+    if(USE_HORIZONTAL==0)
+	{
+		LCD_WR_REG(0x2a);//列地址设置
+		LCD_WR_DATA(x1+26);
+		LCD_WR_DATA(x2+26);
+		LCD_WR_REG(0x2b);//行地址设置
+		LCD_WR_DATA(y1+1);
+		LCD_WR_DATA(y2+1);
+		LCD_WR_REG(0x2c);//储存器写
+	}
+	else if(USE_HORIZONTAL==1)
+	{
+		LCD_WR_REG(0x2a);//列地址设置
+		LCD_WR_DATA(x1+26);
+		LCD_WR_DATA(x2+26);
+		LCD_WR_REG(0x2b);//行地址设置
+		LCD_WR_DATA(y1+1);
+		LCD_WR_DATA(y2+1);
+		LCD_WR_REG(0x2c);//储存器写
+	}
+	else if(USE_HORIZONTAL==2)
+	{
+		LCD_WR_REG(0x2a);//列地址设置
+		LCD_WR_DATA(x1+1);
+		LCD_WR_DATA(x2+1);
+		LCD_WR_REG(0x2b);//行地址设置
+		LCD_WR_DATA(y1+26);
+		LCD_WR_DATA(y2+26);
+		LCD_WR_REG(0x2c);//储存器写
+	}
+	else
+	{
+		LCD_WR_REG(0x2a);//列地址设置
+		LCD_WR_DATA(x1+1);
+		LCD_WR_DATA(x2+1);
+		LCD_WR_REG(0x2b);//行地址设置
+		LCD_WR_DATA(y1+26);
+		LCD_WR_DATA(y2+26);
+		LCD_WR_REG(0x2c);//储存器写
+	}
+#else
+    if(USE_HORIZONTAL==0)
+	{
+		LCD_WR_REG(0x2a);//列地址设置
+		LCD_WR_DATA(x1+24);
+		LCD_WR_DATA(x2+24);
+		LCD_WR_REG(0x2b);//行地址设置
+		LCD_WR_DATA(y1);
+		LCD_WR_DATA(y2);
+		LCD_WR_REG(0x2c);//储存器写
+	}
+	else if(USE_HORIZONTAL==1)
+	{
+		LCD_WR_REG(0x2a);//列地址设置
+		LCD_WR_DATA(x1+24);
+		LCD_WR_DATA(x2+24);
+		LCD_WR_REG(0x2b);//行地址设置
+		LCD_WR_DATA(y1);
+		LCD_WR_DATA(y2);
+		LCD_WR_REG(0x2c);//储存器写
+	}
+	else if(USE_HORIZONTAL==2)
+	{
+		LCD_WR_REG(0x2a);//列地址设置
+		LCD_WR_DATA(x1);
+		LCD_WR_DATA(x2);
+		LCD_WR_REG(0x2b);//行地址设置
+		LCD_WR_DATA(y1+24);
+		LCD_WR_DATA(y2+24);
+		LCD_WR_REG(0x2c);//储存器写
+	}
+	else
+	{
+		LCD_WR_REG(0x2a);//列地址设置
+		LCD_WR_DATA(x1);
+		LCD_WR_DATA(x2);
+		LCD_WR_REG(0x2b);//行地址设置
+		LCD_WR_DATA(y1+24);
+		LCD_WR_DATA(y2+24);
+		LCD_WR_REG(0x2c);//储存器写
+	}
+#endif
+	
+}
+
+
+
+void pwm_init()
+{
+	/* 背光改用新版仍支持的 LEDC，独占定时器 2 和通道 2。 */
+	const ledc_timer_config_t timer_config = {
+		.speed_mode = LEDC_LOW_SPEED_MODE,
+		.duty_resolution = LEDC_TIMER_10_BIT,
+		.timer_num = LEDC_TIMER_2,
+		.freq_hz = 10000,
+		.clk_cfg = LEDC_AUTO_CLK,
+	};
+	ESP_ERROR_CHECK(ledc_timer_config(&timer_config));
+
+	const ledc_channel_config_t channel_config = {
+		.gpio_num = PIN_NUM_BCKL,
+		.speed_mode = LEDC_LOW_SPEED_MODE,
+		.channel = LEDC_CHANNEL_2,
+		.timer_sel = LEDC_TIMER_2,
+		.duty = 0,
+		.hpoint = 0,
+	};
+	ESP_ERROR_CHECK(ledc_channel_config(&channel_config));
+}
+
+static void lcd_set_backlight_duty(uint8_t percent)
+{
+	uint32_t duty = ((1U << LEDC_TIMER_10_BIT) - 1U) * percent / 100U;
+	ESP_ERROR_CHECK(ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_2, duty));
+	ESP_ERROR_CHECK(ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_2));
+}
+   
+
+void LCD_Init(void)
+{
+  
+    spi_init();
+    gpio_set_direction(PIN_NUM_DC, GPIO_MODE_OUTPUT);
+    gpio_set_direction(PIN_NUM_RST, GPIO_MODE_OUTPUT);
+    //gpio_set_direction(PIN_NUM_BCKL, GPIO_MODE_OUTPUT);
+	gpio_set_level(PIN_NUM_DC, 1);
+	gpio_set_level(PIN_NUM_RST, 1);
+	//gpio_set_level(PIN_NUM_BCKL, 0);
+    pwm_init();
+	
+	//gpio_set_direction(SPI_NUM_CS, GPIO_MODE_OUTPUT);
+    //Reset the display
+    gpio_set_level(PIN_NUM_RST, 0);
+    vTaskDelay(10 / portTICK_RATE_MS);
+    gpio_set_level(PIN_NUM_RST, 1);
+    vTaskDelay(10 / portTICK_RATE_MS);
+
+
+
+    LCD_WR_REG(0x11);     //Sleep out
+	vTaskDelay(10 / portTICK_RATE_MS);           //Delay 120ms
+
+	LCD_WR_REG(0xB1);     //Normal mode
+	LCD_WR_DATA8(0x05);   LCD_WR_DATA8(0x3C);   LCD_WR_DATA8(0x3C);   
+	LCD_WR_REG(0xB2);     //Idle mode
+    LCD_WR_DATA8(0x05);   LCD_WR_DATA8(0x3C);   LCD_WR_DATA8(0x3C);   
+	LCD_WR_REG(0xB3);     //Partial mode
+	LCD_WR_DATA8(0x05);   LCD_WR_DATA8(0x3C);   LCD_WR_DATA8(0x3C);   LCD_WR_DATA8(0x05);   LCD_WR_DATA8(0x3C);   LCD_WR_DATA8(0x3C);   
+	LCD_WR_REG(0xB4);     //Dot inversion
+	LCD_WR_DATA8(0x03);   
+	LCD_WR_REG(0xC0);     //AVDD GVDD
+	LCD_WR_DATA8(0xAB);   LCD_WR_DATA8(0x0B);   LCD_WR_DATA8(0x04);   
+	LCD_WR_REG(0xC1);     //VGH VGL
+	LCD_WR_DATA8(0xC5);   //C0
+	LCD_WR_REG(0xC2);     //Normal Mode
+	LCD_WR_DATA8(0x0D);   LCD_WR_DATA8(0x00);   
+	LCD_WR_REG(0xC3);     //Idle
+	LCD_WR_DATA8(0x8D);   LCD_WR_DATA8(0x6A);   
+	LCD_WR_REG(0xC4);     //Partial+Full
+	LCD_WR_DATA8(0x8D);   LCD_WR_DATA8(0xEE);   
+	LCD_WR_REG(0xC5);     //VCOM
+	LCD_WR_DATA8(0x0F);   
+	LCD_WR_REG(0xE0);     //positive gamma
+	LCD_WR_DATA8(0x07);   LCD_WR_DATA8(0x0E);   LCD_WR_DATA8(0x08);   LCD_WR_DATA8(0x07);   LCD_WR_DATA8(0x10);   LCD_WR_DATA8(0x07);   
+	LCD_WR_DATA8(0x02);   LCD_WR_DATA8(0x07);   LCD_WR_DATA8(0x09);   LCD_WR_DATA8(0x0F);   LCD_WR_DATA8(0x25);   LCD_WR_DATA8(0x36);   
+	LCD_WR_DATA8(0x00);   LCD_WR_DATA8(0x08);   LCD_WR_DATA8(0x04);   LCD_WR_DATA8(0x10);   
+	LCD_WR_REG(0xE1);     //negative gamma
+	LCD_WR_DATA8(0x0A);   LCD_WR_DATA8(0x0D);   LCD_WR_DATA8(0x08);   LCD_WR_DATA8(0x07);   LCD_WR_DATA8(0x0F);   LCD_WR_DATA8(0x07);   
+	LCD_WR_DATA8(0x02);   LCD_WR_DATA8(0x07);   LCD_WR_DATA8(0x09);   LCD_WR_DATA8(0x0F);   LCD_WR_DATA8(0x25);   LCD_WR_DATA8(0x35);   
+	LCD_WR_DATA8(0x00);   LCD_WR_DATA8(0x09);   LCD_WR_DATA8(0x04);   LCD_WR_DATA8(0x10);
+		 
+	LCD_WR_REG(0xFC);    
+	LCD_WR_DATA8(0x80);  
+		
+	LCD_WR_REG(0x3A);     
+	LCD_WR_DATA8(0x05);   
+	LCD_WR_REG(0x36);
+	if(USE_HORIZONTAL==0)LCD_WR_DATA8(0x08);
+	else if(USE_HORIZONTAL==1)LCD_WR_DATA8(0xC8);
+	else if(USE_HORIZONTAL==2)LCD_WR_DATA8(0x78);
+	else LCD_WR_DATA8(0xA8); 
+#ifndef  ST7735S
+	LCD_WR_REG(0x21);     //Display inversion
+#endif
+	LCD_WR_REG(0x29);     //Display on
+	LCD_WR_REG(0x2A);     //Set Column Address
+	LCD_WR_DATA8(0x00);   LCD_WR_DATA8(0x1A);  LCD_WR_DATA8(0x00);   LCD_WR_DATA8(0x69);   
+	LCD_WR_REG(0x2B);     //Set Page Address
+	LCD_WR_DATA8(0x00);   LCD_WR_DATA8(0x01);    LCD_WR_DATA8(0x00);   LCD_WR_DATA8(0xA0);  
+	LCD_WR_REG(0x2C);
+
+ 
+	
+    //LCD_Fill(0,0,160,80,BLACK);
+	LCD_Clear();
+	vTaskDelay(10 / portTICK_RATE_MS); 
+	//gpio_set_level(PIN_NUM_BCKL, 1);
+	lcd_set_backlight_duty(st7735_lcd_backlight);
+
+} 
+
+
+void LCD_Fill(uint16_t xsta,uint16_t ysta,uint16_t xend,uint16_t yend,uint16_t color)
+{          
+	uint16_t i,j; 
+	Address_Set(xsta,ysta,xend-1,yend-1);//设置显示范围	
+	for(i=ysta;i<yend;i++)
+	{													   	 	
+		for(j=xsta;j<xend;j++)
+		{
+			LCD_WR_DATA(color);
+		}
+	} 				  	    
+}
+
+extern lv_color_t lv_disp_buf1[];
+void LCD_Clear()
+{          
+	
+	Address_Set(0,0,159,79);//设置显示范围
+
+	esp_err_t ret;
+    spi_transaction_t t;
+    memset(&t, 0, sizeof(t));       //Zero out the transaction
+    t.length=2*8*160*80;                     //Command is 8 bits
+    t.tx_buffer=lv_disp_buf1;               //The data is the cmd itself
+    //t.user=(void*)1;                //D/C needs to be set to 0
+    ret=spi_device_polling_transmit(my_spi, &t);  //Transmit!
+    assert(ret==ESP_OK);            //Should have had no issues.					  	    
+}
+
+
+void LCD_SET_BLK(int8_t light)
+{
+	if(light<=st7735_lcd_backlight_max&&light>=st7735_lcd_backlight_min)
+	{
+		st7735_lcd_backlight=light;
+		lcd_set_backlight_duty(st7735_lcd_backlight);
+	}
+
+}
+
+uint16_t LCD_GET_BLK(void)
+{
+	return st7735_lcd_backlight;
+}
