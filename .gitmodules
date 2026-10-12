@@ -1,3 +1,3 @@
 [submodule "Firmware/ESP32/components/esp32-video"]
 	path = Firmware/ESP32/components/esp32-video
-	url = https://github.com/ChisBread/esp32-video
+	url = https://github.com/Tianli-Wang/esp32-video.git
